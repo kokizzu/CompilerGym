@@ -192,8 +192,8 @@ class CompilerEnv(gym.Env):
         self,
         service: Union[str, Path],
         benchmark: Optional[Union[str, Benchmark]] = None,
-        observation_space: Optional[str] = None,
-        reward_space: Optional[str] = None,
+        observation_space: Optional[Union[str, ObservationSpaceSpec]] = None,
+        reward_space: Optional[Union[str, RewardSpaceSpec]] = None,
         action_space: Optional[str] = None,
         connection_settings: Optional[ConnectionOpts] = None,
     ):
@@ -426,17 +426,24 @@ class CompilerEnv(gym.Env):
         )
 
     @reward_space.setter
-    def reward_space(self, reward_space: Optional[str]) -> None:
-        if reward_space is not None and reward_space not in self.reward.spaces:
+    def reward_space(self, reward_space: Optional[Union[str, RewardSpaceSpec]]) -> None:
+        if isinstance(reward_space, str) and reward_space not in self.reward.spaces:
             raise LookupError(f"Reward space not found: {reward_space}")
+        reward_space_name = (
+            reward_space.id
+            if isinstance(reward_space, RewardSpaceSpec)
+            else reward_space
+        )
+
         if self.in_episode:
             warnings.warn(
                 "Changing eager reward space has no effect until reset() is called."
             )
+
         self._eager_reward: bool = reward_space is not None
-        self._eager_reward_space: str = reward_space or ""
+        self._eager_reward_space: str = reward_space_name or ""
         if self._eager_reward:
-            self.reward_range = self.reward.spaces[reward_space].range
+            self.reward_range = self.reward.spaces[reward_space_name].range
         else:
             self.reward_range = (-np.inf, np.inf)
 
@@ -465,19 +472,30 @@ class CompilerEnv(gym.Env):
         return self._eager_observation_space
 
     @observation_space.setter
-    def observation_space(self, observation_space: Optional[str]) -> None:
+    def observation_space(
+        self, observation_space: Optional[Union[str, ObservationSpaceSpec]]
+    ) -> None:
         if (
-            observation_space is not None
+            isinstance(observation_space, str)
             and observation_space not in self.observation.spaces
         ):
             raise LookupError(f"Observation space not found: {observation_space}")
+
+        observation_space_name = (
+            observation_space.id
+            if isinstance(observation_space, ObservationSpaceSpec)
+            else observation_space
+        )
         if self.in_episode:
             warnings.warn(
                 "Changing eager observation space has no effect until reset() is called."
             )
+
         self._eager_observation = observation_space is not None
         if self._eager_observation:
-            self._eager_observation_space = self.observation.spaces[observation_space]
+            self._eager_observation_space = self.observation.spaces[
+                observation_space_name
+            ]
         else:
             self._eager_observation_space = None
 
