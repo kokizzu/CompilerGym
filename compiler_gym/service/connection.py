@@ -13,9 +13,10 @@ from datetime import datetime
 from pathlib import Path
 from signal import Signals
 from time import sleep, time
-from typing import Iterable, List, NamedTuple, Optional, TypeVar, Union
+from typing import Iterable, List, Optional, TypeVar, Union
 
 import grpc
+from pydantic import BaseModel
 
 from compiler_gym.service.proto import (
     ActionSpace,
@@ -42,7 +43,7 @@ GRPC_CHANNEL_OPTIONS = [
 ]
 
 
-class ConnectionOpts(NamedTuple):
+class ConnectionOpts(BaseModel):
     """The options used to configure a connection to a service."""
 
     rpc_call_max_seconds: float = 300
@@ -81,9 +82,21 @@ class ConnectionOpts(NamedTuple):
     rpc_init_max_seconds: float = 3
     """The maximum number of seconds to wait for an RPC connection to establish."""
 
+    always_send_benchmark_on_reset: bool = False
+    """Send the full benchmark program data to the compiler service on ever call
+    to :meth:`env.reset() <compiler_gym.envs.CompilerEnv.reset>`. This is more
+    efficient in cases where the majority of calls to
+    :meth:`env.reset() <compiler_gym.envs.CompilerEnv.reset>` uses a different
+    benchmark. In case of benchmark re-use, leave this :code:`False`.
+    """
+
 
 class ServiceError(Exception):
     """Error raised from the service."""
+
+
+class SessionNotFound(ServiceError):
+    """Requested session ID not found in service."""
 
 
 class ServiceOSError(ServiceError, OSError):
@@ -129,7 +142,7 @@ else:
     StubMethod = Callable[[Request], Reply]
 
 
-class Connection(object):
+class Connection:
     """Base class for service connections."""
 
     def __init__(self, channel, url: str, logger: logging.Logger):
@@ -247,10 +260,18 @@ def make_working_dir() -> Path:
     """Make a working directory for a service. The calling code is responsible
     for removing this directory when done.
     """
-    random_hash = random.getrandbits(16)
-    service_name = datetime.now().strftime(f"s/%m%dT%H%M%S-%f-{random_hash:04x}")
-    working_dir = transient_cache_path(service_name)
-    (working_dir / "logs").mkdir(parents=True, exist_ok=False)
+    while True:
+        random_hash = random.getrandbits(16)
+        service_name = datetime.now().strftime(f"s/%m%dT%H%M%S-%f-{random_hash:04x}")
+        working_dir = transient_cache_path(service_name)
+        # Guard against the unlike scenario that there is a collision between
+        # the randomly generated working directories of multiple
+        # make_working_dir() calls.
+        try:
+            (working_dir / "logs").mkdir(parents=True, exist_ok=False)
+            break
+        except FileExistsError:
+            pass
     return working_dir
 
 
@@ -276,41 +297,46 @@ class ManagedConnection(Connection):
             raise FileNotFoundError(f"File not found: {local_service_binary}")
         self.working_dir = make_working_dir()
 
-        # Set environment variable COMPILER_GYM_SERVICE_ARGS to pass
-        # additional arguments to the service.
-        args = os.environ.get("COMPILER_GYM_SERVICE_ARGS", "")
-
         # The command that will be executed. The working directory of this
         # command will be set to the local_service_binary's parent, so we can
         # use the relpath for a neater `ps aux` view.
         cmd = [
             f"./{local_service_binary.name}",
             f"--working_dir={self.working_dir}",
-            args,
         ]
 
         # Set the root of the runfiles directory.
         env = os.environ.copy()
         env["COMPILER_GYM_RUNFILES"] = str(runfiles_path("."))
         env["COMPILER_GYM_SITE_DATA"] = str(site_data_path("."))
+        # Set the pythonpath so that executable python scripts can use absolute
+        # import paths like `from compiler_gym.envs.foo import bar`.
+        env["PYTHONPATH"] = env["COMPILER_GYM_RUNFILES"]
 
-        # Set the verbosity of the service. The logging level of the service
-        # is the debug level - 1, so that COMPILER_GYM_DEUG=3 will cause VLOG(2)
+        # Set the verbosity of the service. The logging level of the service is
+        # the debug level - 1, so that COMPILER_GYM_DEBUG=3 will cause VLOG(2)
         # and lower to be logged to stdout.
         debug_level = get_debug_level()
         if debug_level > 0:
             cmd.append("--alsologtostderr")
             cmd.append(f"-v={debug_level - 1}")
             # If we are debugging the backend, set the logbuflevel to a low
-            # value to disable buffering of logging messages. This makes it
-            # easier to `LOG(INFO) << "..."` debug things.
+            # value to disable buffering of logging messages. This removes any
+            # buffering between `LOG(INFO) << "..."` and the message being
+            # emited to stderr.
             cmd.append("--logbuflevel=-1")
         else:
             # Silence the gRPC logs as we will do our own error reporting, but
             # don't override any existing value so that the user may debug the
             # gRPC backend by setting GRPC_VERBOSITY to ERROR, INFO, or DEBUG.
             if not os.environ.get("GRPC_VERBOSITY"):
-                os.environ["GRPC_VERBOSITY"] = "NONE"
+                env["GRPC_VERBOSITY"] = "NONE"
+
+        # Set environment variable COMPILER_GYM_SERVICE_ARGS to pass
+        # additional arguments to the service.
+        args = os.environ.get("COMPILER_GYM_SERVICE_ARGS", "")
+        if args:
+            cmd.append(args)
 
         logger.debug("Exec %s", cmd)
         self.process = subprocess.Popen(
@@ -318,6 +344,7 @@ class ManagedConnection(Connection):
             env=env,
             cwd=local_service_binary.parent,
         )
+        self._process_returncode_exception_raised = False
 
         # Read the port from a file generated by the service.
         wait_secs = 0.1
@@ -418,14 +445,30 @@ class ManagedConnection(Connection):
     def close(self):
         """Terminate a local subprocess and close the connection."""
         try:
-            self.process.kill()
+            self.process.terminate()
             self.process.communicate(timeout=self.process_exit_max_seconds)
+            if (
+                self.process.returncode
+                and not self._process_returncode_exception_raised
+            ):
+                # You can call close() multiple times but we only want to emit
+                # the exception once.
+                self._process_returncode_exception_raised = True
+                raise ServiceError(
+                    f"Service exited with returncode {self.process.returncode}"
+                )
         except ProcessLookupError:
             self.logger.warning("Service process not found at %s", self.working_dir)
         except subprocess.TimeoutExpired:
+            # Try and kill it and then walk away.
+            try:
+                self.process.kill()
+            except:  # noqa
+                pass
             self.logger.warning("Abandoning orphan service at %s", self.working_dir)
-        shutil.rmtree(self.working_dir, ignore_errors=True)
-        super().close()
+        finally:
+            shutil.rmtree(self.working_dir, ignore_errors=True)
+            super().close()
 
     def __repr__(self):
         alive_or_dead = "alive" if self.process.poll() else "dead"
@@ -472,7 +515,7 @@ class UnmanagedConnection(Connection):
         return self.url
 
 
-class CompilerGymServiceConnection(object):
+class CompilerGymServiceConnection:
     """A connection to a compiler gym service.
 
     There are two types of service connections: managed and unmanaged. The type

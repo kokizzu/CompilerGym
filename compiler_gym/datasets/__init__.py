@@ -11,12 +11,12 @@ from compiler_gym.datasets.benchmark import (
 from compiler_gym.datasets.dataset import (
     Dataset,
     DatasetInitError,
-    LegacyDataset,
     activate,
     deactivate,
     delete,
     require,
 )
+from compiler_gym.datasets.datasets import Datasets
 from compiler_gym.datasets.files_dataset import FilesDataset
 from compiler_gym.datasets.tar_dataset import TarDataset, TarDatasetWithManifest
 
@@ -27,10 +27,10 @@ __all__ = [
     "BenchmarkSource",
     "Dataset",
     "DatasetInitError",
+    "Datasets",
     "deactivate",
     "delete",
     "FilesDataset",
-    "LegacyDataset",
     "require",
     "TarDataset",
     "TarDatasetWithManifest",

@@ -22,6 +22,17 @@ py_test(
     deps = [
         "//compiler_gym",
         "//tests:test_main",
+        "//tests/pytest_plugins:common",
+    ],
+)
+
+py_test(
+    name = "make_test",
+    timeout = "short",
+    srcs = ["make_test.py"],
+    deps = [
+        "//compiler_gym",
+        "//tests:test_main",
     ],
 )
 
@@ -34,6 +45,7 @@ py_test(
         "//compiler_gym:random_replay",
         "//compiler_gym:random_search",
         "//tests:test_main",
+        "//tests/pytest_plugins:common",
     ],
 )
 
@@ -48,7 +60,6 @@ py_library(
         "//tests:__subpackages__",
     ],
     deps = [
-        "//compiler_gym",
         "//compiler_gym/util",
     ],
 )

@@ -21,6 +21,7 @@ py_library(
         ":observation_space_spec",
         "//compiler_gym/service",
         "//compiler_gym/service/proto",
+        "//compiler_gym/util",
     ],
 )
 
@@ -31,6 +32,7 @@ py_library(
         "//compiler_gym/service",
         "//compiler_gym/service/proto",
         "//compiler_gym/spaces",
+        "//compiler_gym/util",
     ],
 )
 
@@ -40,7 +42,7 @@ py_library(
     visibility = ["//compiler_gym:__subpackages__"],
     deps = [
         ":observation",
-        "//compiler_gym/service",
+        "//compiler_gym/datasets",
         "//compiler_gym/service/proto",
         "//compiler_gym/spaces",
     ],

@@ -1,7 +1,7 @@
 compiler_gym
 ============
 
-.. contents::
+.. contents:: Document contents:
     :local:
 
 .. currentmodule:: compiler_gym
@@ -12,6 +12,19 @@ CompilerEnvState
 
 .. autoclass:: CompilerEnvState
    :members:
+
+.. autoclass:: CompilerEnvStateWriter
+   :members:
+
+   .. automethod:: __init__
+
+.. autoclass:: CompilerEnvStateReader
+   :members:
+
+   .. automethod:: __init__
+
+   .. automethod:: __iter__
+
 
 Validation
 ----------

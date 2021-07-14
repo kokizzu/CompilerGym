@@ -15,10 +15,12 @@ _PICKLED_EMBEDDINGS = runfiles_path(
 )
 
 
-class Inst2vecEncoder(object):
+class Inst2vecEncoder:
     """An LLVM encoder for inst2vec."""
 
     def __init__(self):
+        # TODO(github.com/facebookresearch/CompilerGym/issues/122): Lazily
+        # instantiate inst2vec encoder.
         with open(str(_PICKLED_VOCABULARY), "rb") as f:
             self.vocab = pickle.load(f)
 

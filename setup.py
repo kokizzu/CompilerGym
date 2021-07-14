@@ -50,13 +50,17 @@ setuptools.setup(
     packages=[
         "compiler_gym.bin",
         "compiler_gym.datasets",
+        "compiler_gym.envs.llvm.datasets",
         "compiler_gym.envs.llvm.service.passes",
         "compiler_gym.envs.llvm.service",
         "compiler_gym.envs.llvm",
+        "compiler_gym.envs.llvm",
+        "compiler_gym.envs",
         "compiler_gym.envs",
         "compiler_gym.leaderboard",
-        "compiler_gym.service.proto",
         "compiler_gym.service",
+        "compiler_gym.service.proto",
+        "compiler_gym.service.runtime",
         "compiler_gym.spaces",
         "compiler_gym.third_party.autophase",
         "compiler_gym.third_party.inst2vec",
@@ -65,6 +69,7 @@ setuptools.setup(
         "compiler_gym.util.flags",
         "compiler_gym.util",
         "compiler_gym.views",
+        "compiler_gym.wrappers",
         "compiler_gym",
     ],
     package_dir={
@@ -72,13 +77,12 @@ setuptools.setup(
     },
     package_data={
         "compiler_gym": [
-            "envs/llvm/service/passes/*.txt",
             "envs/llvm/service/compiler_gym-llvm-service",
             "envs/llvm/service/libLLVMPolly.so",
+            "envs/llvm/service/passes/*.txt",
+            "third_party/cbench/benchmarks.txt",
+            "third_party/cbench/cbench-v*/*",
             "third_party/inst2vec/*.pickle",
-            "third_party/cBench/benchmarks.txt",
-            "third_party/cBench/cBench-v*/*",
-            "third_party/cBench/runtime_data/**/*",
         ]
     },
     install_requires=requirements,

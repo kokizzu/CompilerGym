@@ -32,27 +32,17 @@ py_library(
 )
 
 py_library(
-    name = "legacy_datasets",
-    srcs = ["legacy_datasets.py"],
-    visibility = ["//tests:__subpackages__"],
-    deps = [
-        "//compiler_gym/datasets",
-        "//compiler_gym/third_party/llvm",
-        "//compiler_gym/util",
-    ],
-)
-
-py_library(
     name = "llvm_env",
     srcs = ["llvm_env.py"],
     data = [
         "//compiler_gym/envs/llvm/service/passes:actions_genfiles",
     ],
     deps = [
-        ":legacy_datasets",
         ":llvm_benchmark",
         ":llvm_rewards",
+        "//compiler_gym/datasets",
         "//compiler_gym/envs:compiler_env",
+        "//compiler_gym/envs/llvm/datasets",
         "//compiler_gym/spaces",
         "//compiler_gym/third_party/autophase",
         "//compiler_gym/third_party/inst2vec",
@@ -67,6 +57,7 @@ py_library(
     deps = [
         "//compiler_gym/service",
         "//compiler_gym/spaces",
+        "//compiler_gym/util",
         "//compiler_gym/views",
     ],
 )

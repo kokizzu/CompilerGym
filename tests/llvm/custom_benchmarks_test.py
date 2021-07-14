@@ -12,6 +12,7 @@ import gym
 import pytest
 
 from compiler_gym.datasets import Benchmark
+from compiler_gym.datasets.benchmark import BenchmarkInitError
 from compiler_gym.envs import LlvmEnv, llvm
 from compiler_gym.service.proto import Benchmark as BenchmarkProto
 from compiler_gym.service.proto import File
@@ -24,7 +25,7 @@ pytest_plugins = ["tests.pytest_plugins.llvm"]
 # The path of an IR file that assembles but does not compile.
 INVALID_IR_PATH = runfiles_path("tests/llvm/invalid_ir.ll")
 EXAMPLE_BITCODE_FILE = runfiles_path(
-    "compiler_gym/third_party/cBench/cBench-v1/crc32.bc"
+    "compiler_gym/third_party/cbench/cbench-v1/crc32.bc"
 )
 EXAMPLE_BITCODE_IR_INSTRUCTION_COUNT = 242
 
@@ -34,7 +35,7 @@ def test_reset_invalid_benchmark(env: LlvmEnv):
     with pytest.raises(ValueError) as ctx:
         env.reset(benchmark=invalid_benchmark)
 
-    assert str(ctx.value) == f'Unknown benchmark "{invalid_benchmark}"'
+    assert str(ctx.value) == f"Invalid benchmark URI: 'benchmark://{invalid_benchmark}'"
 
 
 def test_invalid_benchmark_data(env: LlvmEnv):
@@ -55,10 +56,8 @@ def test_invalid_benchmark_missing_file(env: LlvmEnv):
         )
     )
 
-    with pytest.raises(ValueError) as ctx:
+    with pytest.raises(ValueError, match="No program set"):
         env.reset(benchmark=benchmark)
-
-    assert str(ctx.value) == "No program set"
 
 
 def test_benchmark_path_empty_file(env: LlvmEnv):
@@ -68,7 +67,7 @@ def test_benchmark_path_empty_file(env: LlvmEnv):
 
         benchmark = Benchmark.from_file("benchmark://new", tmpdir / "test.bc")
 
-        with pytest.raises(ValueError) as ctx:
+        with pytest.raises(BenchmarkInitError) as ctx:
             env.reset(benchmark=benchmark)
 
     assert str(ctx.value) == f'File is empty: "{tmpdir}/test.bc"'
@@ -100,7 +99,7 @@ def test_benchmark_path_invalid_protocol(env: LlvmEnv):
 
     assert (
         str(ctx.value)
-        == 'Unsupported benchmark URI protocol: "invalid_protocol://test"'
+        == 'Invalid benchmark data URI. Only the file:/// protocol is supported: "invalid_protocol://test"'
     )
 
 
@@ -247,8 +246,8 @@ def test_make_benchmark_invalid_clang_job():
 
 
 def test_custom_benchmark_is_added_on_service_restart(env: LlvmEnv):
-    # When the service is restarted, the environment must send a custom
-    # benchmark to it again.
+    # When the service is restarted, the environment still uses the same custom
+    # benchmark.
     with tempfile.TemporaryDirectory() as d:
         source = Path(d) / "a.c"
         with open(str(source), "w") as f:
@@ -260,8 +259,8 @@ def test_custom_benchmark_is_added_on_service_restart(env: LlvmEnv):
     assert env.benchmark == benchmark.uri
 
     # Kill the service so that the next call to reset() starts a new one.
-    env.service.close()
-    env.service = None
+    env.close()
+    assert env.service is None
 
     env.reset()
     assert env.benchmark == benchmark.uri

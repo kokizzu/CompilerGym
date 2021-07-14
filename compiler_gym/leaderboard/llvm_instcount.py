@@ -28,6 +28,8 @@ Users who wish to create a submission for this leaderboard may use
 automatically evaluate their agent on the test set.
 """
 import logging
+import os
+from itertools import islice
 from pathlib import Path
 from threading import Thread
 from time import sleep
@@ -39,7 +41,11 @@ from absl import app, flags
 
 import compiler_gym.envs  # noqa Register environments.
 from compiler_gym.bin.validate import main as validate
-from compiler_gym.compiler_env_state import CompilerEnvState
+from compiler_gym.compiler_env_state import (
+    CompilerEnvState,
+    CompilerEnvStateReader,
+    CompilerEnvStateWriter,
+)
 from compiler_gym.envs import LlvmEnv
 from compiler_gym.util.statistics import arithmetic_mean, geometric_mean
 from compiler_gym.util.timer import Timer, humanize_duration_hms
@@ -64,7 +70,7 @@ flags.DEFINE_integer(
 flags.DEFINE_integer(
     "n", 10, "The number of repetitions of the search to run for each benchmark."
 )
-flags.DEFINE_string("test_dataset", "cBench-v1", "The dataset to use for the search.")
+flags.DEFINE_string("test_dataset", "cbench-v1", "The dataset to use for the search.")
 flags.DEFINE_boolean("validate", True, "Run validation on the results.")
 flags.DEFINE_boolean(
     "resume",
@@ -97,7 +103,14 @@ class _EvalPolicyWorker(Thread):
         self.alive = True
 
     def run(self):
-        with open(FLAGS.leaderboard_results, "a") as logfile:
+        # Determine if we need to print a header.
+        header = (
+            not Path(FLAGS.leaderboard_results).is_file()
+            or os.stat(FLAGS.leaderboard_results).st_size == 0
+        )
+        with CompilerEnvStateWriter(
+            open(FLAGS.leaderboard_results, "a"), header=header
+        ) as writer:
             for benchmark in self.benchmarks:
                 self.env.reset(benchmark=benchmark)
                 with Timer() as timer:
@@ -106,7 +119,7 @@ class _EvalPolicyWorker(Thread):
                 # Sanity check that the policy didn't change the expected
                 # experimental setup.
                 assert self.env.in_episode, "Environment is no longer in an episode"
-                assert (
+                assert self.env.benchmark and (
                     self.env.benchmark == benchmark
                 ), "Policy changed environment benchmark"
                 assert self.env.reward_space, "Policy unset environment reward space"
@@ -115,13 +128,10 @@ class _EvalPolicyWorker(Thread):
                 ), "Policy changed environment reward space"
 
                 # Override walltime in the generated state.
-                state = CompilerEnvState(
-                    benchmark=self.env.state.benchmark,
-                    reward=self.env.state.reward,
-                    walltime=timer.time,
-                    commandline=self.env.state.commandline,
-                )
-                print(state.to_csv(), file=logfile, flush=True)
+                state = self.env.state.copy()
+                state.walltime = timer.time
+
+                writer.write_state(state, flush=True)
                 self.states.append(state)
 
                 if not self.alive:
@@ -229,12 +239,11 @@ def eval_llvm_instcount_policy(policy: Policy) -> None:
         print(f"Writing logs to {FLAGS.leaderboard_logfile}")
 
         try:
-            # Install the required dataset and build the list of benchmarks to
-            # evaluate.
-            env.require_dataset(FLAGS.test_dataset)
-            benchmarks = sorted([b for b in env.benchmarks if FLAGS.test_dataset in b])
+            # Build the list of benchmarks to evaluate.
+            benchmarks = env.datasets[FLAGS.test_dataset].benchmark_uris()
             if FLAGS.max_benchmarks:
-                benchmarks = benchmarks[: FLAGS.max_benchmarks]
+                benchmarks = islice(benchmarks, FLAGS.max_benchmarks)
+            benchmarks = list(benchmarks)
 
             # Repeat the searches for the requested number of iterations.
             benchmarks *= FLAGS.n
@@ -246,16 +255,11 @@ def eval_llvm_instcount_policy(policy: Policy) -> None:
             # of benchmarks to evaluate.
             init_states = []
             if FLAGS.resume and Path(FLAGS.leaderboard_results).is_file():
-                with open(FLAGS.leaderboard_results, "r") as f:
-                    for state in CompilerEnvState.read_csv_file(f):
+                with CompilerEnvStateReader(open(FLAGS.leaderboard_results)) as reader:
+                    for state in reader:
                         init_states.append(state)
                         if state.benchmark in benchmarks:
                             benchmarks.remove(state.benchmark)
-
-            # Print the CSV header if we need to.
-            if not init_states:
-                with open(FLAGS.leaderboard_results, "w") as f:
-                    print(CompilerEnvState.csv_header(), file=f)
 
             # Run the benchmark loop in background so that we can asynchronously
             # log progress.

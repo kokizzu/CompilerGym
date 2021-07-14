@@ -18,14 +18,14 @@ pytest_plugins = ["tests.pytest_plugins.llvm"]
 logging.basicConfig(level=logging.DEBUG)
 
 
-class MockActionSpace(object):
+class MockActionSpace:
     """A mock action space for use by MockEnv."""
 
     def __init__(self, actions):
         self.flags = {a: str(a) for a in set(actions)}
 
 
-class MockValidationResult(object):
+class MockValidationResult:
     """A mock validation result for use by MockEnv."""
 
     def __init__(self, okay):
@@ -35,7 +35,7 @@ class MockValidationResult(object):
         return self._okay
 
 
-class MockEnv(object):
+class MockEnv:
     """A mock environment for testing trajectory minimization."""
 
     def __init__(self, actions: List[int], validate=lambda env: True):
@@ -150,7 +150,7 @@ def test_random_minimization_no_effect():
 
 def test_minimize_trajectory_iteratively_llvm_crc32(env):
     """Test trajectory minimization on a real environment."""
-    env.reset(benchmark="cBench-v1/crc32")
+    env.reset(benchmark="cbench-v1/crc32")
     env.step(
         [
             env.action_space["-mem2reg"],

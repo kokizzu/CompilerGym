@@ -2,12 +2,12 @@
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
 
 import numpy as np
 
-from compiler_gym.service import observation_t
 from compiler_gym.spaces.scalar import Scalar
+from compiler_gym.util.gym_type_hints import ObservationType, RewardType
 
 
 class Reward(Scalar):
@@ -39,11 +39,11 @@ class Reward(Scalar):
         self,
         id: str,
         observation_spaces: Optional[List[str]] = None,
-        default_value: float = 0,
-        min: Optional[float] = None,
-        max: Optional[float] = None,
+        default_value: RewardType = 0,
+        min: Optional[RewardType] = None,
+        max: Optional[RewardType] = None,
         default_negates_returns: bool = False,
-        success_threshold: Optional[float] = None,
+        success_threshold: Optional[RewardType] = None,
         deterministic: bool = False,
         platform_dependent: bool = True,
     ):
@@ -82,7 +82,7 @@ class Reward(Scalar):
         )
         self.id = id
         self.observation_spaces = observation_spaces or []
-        self.default_value: float = default_value
+        self.default_value: RewardType = default_value
         self.default_negates_returns: bool = default_negates_returns
         self.success_threshold = success_threshold
         self.deterministic = deterministic
@@ -98,8 +98,11 @@ class Reward(Scalar):
         pass
 
     def update(
-        self, action: int, observations: List[observation_t], observation_view
-    ) -> float:
+        self,
+        actions: List[int],
+        observations: List[ObservationType],
+        observation_view: "compiler_gym.views.ObservationView",  # noqa: F821
+    ) -> RewardType:
         """Calculate a reward for the given action.
 
         :param action: The action performed.
@@ -111,7 +114,7 @@ class Reward(Scalar):
         """
         raise NotImplementedError("abstract class")
 
-    def reward_on_error(self, episode_reward: float) -> float:
+    def reward_on_error(self, episode_reward: RewardType) -> RewardType:
         """Return the reward value for an error condition.
 
         This method should be used to produce the reward value that should be
@@ -127,9 +130,46 @@ class Reward(Scalar):
             return self.default_value
 
     @property
-    def range(self) -> Tuple[float, float]:
+    def range(self) -> Tuple[RewardType, RewardType]:
         """The lower and upper bounds of the reward."""
         return (self.min, self.max)
 
     def __repr__(self):
         return self.id
+
+    def __eq__(self, other: Union["Reward", str]) -> bool:
+        if isinstance(other, str):
+            return self.id == other
+        elif isinstance(other, Reward):
+            return self.id == other.id
+        else:
+            return False
+
+
+class DefaultRewardFromObservation(Reward):
+    def __init__(self, observation_name: str, **kwargs):
+        super().__init__(
+            observation_spaces=[observation_name], id=observation_name, **kwargs
+        )
+        self.previous_value: Optional[ObservationType] = None
+
+    def reset(self, benchmark: str) -> None:
+        """Called on env.reset(). Reset incremental progress."""
+        del benchmark  # unused
+        self.previous_value = None
+
+    def update(
+        self,
+        action: int,
+        observations: List[ObservationType],
+        observation_view: "compiler_gym.views.ObservationView",  # noqa: F821
+    ) -> RewardType:
+        """Called on env.step(). Compute and return new reward."""
+        del action  # unused
+        del observation_view  # unused
+        value: RewardType = observations[0]
+        if self.previous_value is None:
+            self.previous_value = 0
+        reward = RewardType(value - self.previous_value)
+        self.previous_value = value
+        return reward

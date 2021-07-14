@@ -12,6 +12,8 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
+#include "llvm/IR/DebugInfo.h"
+#include "llvm/IR/Verifier.h"
 #include "llvm/Support/SHA1.h"
 
 namespace fs = boost::filesystem;
@@ -21,13 +23,6 @@ using grpc::StatusCode;
 namespace compiler_gym::llvm_service {
 
 namespace {
-
-BaselineCosts getBaselineCosts(const llvm::Module& unoptimizedModule,
-                               const fs::path& workingDirectory) {
-  BaselineCosts baselineCosts;
-  setbaselineCosts(unoptimizedModule, &baselineCosts, workingDirectory);
-  return baselineCosts;
-}
 
 BenchmarkHash getModuleHash(const llvm::Module& module) {
   BenchmarkHash hash;
@@ -51,8 +46,10 @@ std::unique_ptr<llvm::Module> makeModuleOrDie(llvm::LLVMContext& context, const 
 }  // anonymous namespace
 
 Status readBitcodeFile(const fs::path& path, Bitcode* bitcode) {
-  std::ifstream ifs;
-  ifs.open(path.string());
+  std::ifstream ifs(path.string());
+  if (ifs.fail()) {
+    return Status(StatusCode::NOT_FOUND, fmt::format("File not found: \"{}\"", path.string()));
+  }
 
   ifs.seekg(0, std::ios::end);
   if (ifs.fail()) {
@@ -91,6 +88,15 @@ std::unique_ptr<llvm::Module> makeModule(llvm::LLVMContext& context, const Bitco
     module->setModuleIdentifier("-");
     module->setSourceFileName("-");
 
+    // Strip module debug info.
+    llvm::StripDebugInfo(*module);
+
+    // Erase module-level named metadata.
+    while (!module->named_metadata_empty()) {
+      llvm::NamedMDNode* nmd = &*module->named_metadata_begin();
+      module->eraseNamedMetadata(nmd);
+    }
+
     return module;
   } else {
     *status = Status(StatusCode::INVALID_ARGUMENT,
@@ -101,35 +107,38 @@ std::unique_ptr<llvm::Module> makeModule(llvm::LLVMContext& context, const Bitco
 
 // A benchmark is an LLVM module and the LLVM context that owns it.
 Benchmark::Benchmark(const std::string& name, const Bitcode& bitcode,
-                     const fs::path& workingDirectory, std::optional<fs::path> bitcodePath,
-                     const BaselineCosts* baselineCosts)
+                     const fs::path& workingDirectory, const BaselineCosts& baselineCosts)
     : context_(std::make_unique<llvm::LLVMContext>()),
       module_(makeModuleOrDie(*context_, bitcode, name)),
-      baselineCosts_(baselineCosts ? *baselineCosts : getBaselineCosts(*module_, workingDirectory)),
-      hash_(getModuleHash(*module_)),
-      name_(name),
-      bitcodeSize_(bitcode.size()),
-      bitcodePath_(bitcodePath) {}
+      baselineCosts_(baselineCosts),
+      name_(name) {}
 
 Benchmark::Benchmark(const std::string& name, std::unique_ptr<llvm::LLVMContext> context,
-                     std::unique_ptr<llvm::Module> module, size_t bitcodeSize,
-                     const fs::path& workingDirectory, std::optional<fs::path> bitcodePath,
-                     const BaselineCosts* baselineCosts)
+                     std::unique_ptr<llvm::Module> module, const fs::path& workingDirectory,
+                     const BaselineCosts& baselineCosts)
     : context_(std::move(context)),
       module_(std::move(module)),
-      baselineCosts_(baselineCosts ? *baselineCosts : getBaselineCosts(*module_, workingDirectory)),
-      hash_(getModuleHash(*module_)),
-      name_(name),
-      bitcodeSize_(bitcodeSize),
-      bitcodePath_(bitcodePath) {}
+      baselineCosts_(baselineCosts),
+      name_(name) {}
 
 std::unique_ptr<Benchmark> Benchmark::clone(const fs::path& workingDirectory) const {
   Bitcode bitcode;
   llvm::raw_svector_ostream ostream(bitcode);
   llvm::WriteBitcodeToFile(module(), ostream);
 
-  return std::make_unique<Benchmark>(name(), bitcode, workingDirectory, bitcodePath(),
-                                     &baselineCosts());
+  return std::make_unique<Benchmark>(name(), bitcode, workingDirectory, baselineCosts());
+}
+
+BenchmarkHash Benchmark::module_hash() const { return getModuleHash(*module_); }
+
+Status Benchmark::verify_module() {
+  std::string errorMessage;
+  llvm::raw_string_ostream rso(errorMessage);
+  if (llvm::verifyModule(module(), &rso)) {
+    rso.flush();
+    return Status(StatusCode::DATA_LOSS, "Failed to verify module: " + errorMessage);
+  }
+  return Status::OK;
 }
 
 }  // namespace compiler_gym::llvm_service

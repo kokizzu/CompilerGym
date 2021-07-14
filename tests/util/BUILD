@@ -24,6 +24,15 @@ py_test(
     ],
 )
 
+py_test(
+    name = "download_test",
+    srcs = ["download_test.py"],
+    deps = [
+        "//compiler_gym/util",
+        "//tests:test_main",
+    ],
+)
+
 cc_test(
     name = "EnumUtilTest",
     srcs = ["EnumUtilTest.cc"],
@@ -53,6 +62,16 @@ py_test(
         "//compiler_gym/util",
         "//tests:test_main",
         "//tests/pytest_plugins:llvm",
+    ],
+)
+
+py_test(
+    name = "parallelization_test",
+    timeout = "short",
+    srcs = ["parallelization_test.py"],
+    deps = [
+        "//compiler_gym/util",
+        "//tests:test_main",
     ],
 )
 

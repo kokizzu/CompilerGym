@@ -17,13 +17,19 @@ from compiler_gym.util.decorators import memoized_property
 from compiler_gym.util.download import download
 from compiler_gym.util.filesystem import atomic_file_write
 
+# Module-level locks that ensures exclusive access to install routines across
+# threads. Note that these lock are shared across all TarDataset instances. We
+# don't use per-dataset locks as locks cannot be pickled.
+_TAR_INSTALL_LOCK = Lock()
+_TAR_MANIFEST_INSTALL_LOCK = Lock()
+
 
 class TarDataset(FilesDataset):
     """A dataset comprising a files tree stored in a tar archive.
 
-    This extends the :class:`FilesDataset` class by adding support for
-    compressed archives of files. The archive is downloaded and unpacked
-    on-demand.
+    This extends the :class:`FilesDataset <compiler_gym.datasets.FilesDataset>`
+    class by adding support for compressed archives of files. The archive is
+    downloaded and unpacked on-demand.
     """
 
     def __init__(
@@ -60,24 +66,21 @@ class TarDataset(FilesDataset):
         self.tar_compression = tar_compression
         self.strip_prefix = strip_prefix
 
-        self._installed = False
         self._tar_extracted_marker = self.site_data_path / ".extracted"
-        self._tar_lock = Lock()
-        self._tar_lockfile = self.site_data_path / "LOCK"
+        self._tar_lockfile = self.site_data_path / ".install_lock"
 
     @property
     def installed(self) -> bool:
-        # Fast path for repeated checks to 'installed' without a disk op.
-        if not self._installed:
-            self._installed = self._tar_extracted_marker.is_file()
-        return self._installed
+        return self._tar_extracted_marker.is_file()
 
     def install(self) -> None:
+        super().install()
+
         if self.installed:
             return
 
         # Thread-level and process-level locks to prevent races.
-        with self._tar_lock, InterProcessLock(self._tar_lockfile):
+        with _TAR_INSTALL_LOCK, InterProcessLock(self._tar_lockfile):
             # Repeat the check to see if we have already installed the
             # dataset now that we have acquired the lock.
             if self.installed:
@@ -106,13 +109,14 @@ class TarDataset(FilesDataset):
 
 
 class TarDatasetWithManifest(TarDataset):
-    """A tarball-based dataset that uses a separate file to list benchmark URIs.
+    """A tarball-based dataset that reads the benchmark URIs from a separate
+    manifest file.
 
-    The idea is to allow the list of benchmark URIs to be enumerated in a more
-    lightweight manner than downloading and unpacking the entire dataset. It
-    does this by downloading a "manifest", which is a plain text file containing
-    a list of benchmark names, one per line, and only downloads the actual
-    tarball containing the benchmarks when it is needed.
+    A manifest file is a plain text file containing a list of benchmark names,
+    one per line, and is shipped separately from the tar file. The idea is to
+    allow the list of benchmark URIs to be enumerated in a more lightweight
+    manner than downloading and unpacking the entire dataset. It does this by
+    downloading and unpacking only the manifest to iterate over the URIs.
 
     The manifest file is assumed to be correct and is not validated.
     """
@@ -145,8 +149,7 @@ class TarDatasetWithManifest(TarDataset):
         self.manifest_compression = manifest_compression
         self._manifest_path = self.site_data_path / f"manifest-{manifest_sha256}.txt"
 
-        self._manifest_lock = Lock()
-        self._manifest_lockfile = self.site_data_path / "manifest.LOCK"
+        self._manifest_lockfile = self.site_data_path / ".manifest_lock"
 
     def _read_manifest(self, manifest_data: str) -> List[str]:
         """Read the manifest data into a list of URIs. Does not validate the
@@ -172,7 +175,7 @@ class TarDatasetWithManifest(TarDataset):
             return self._read_manifest_file()
 
         # Thread-level and process-level locks to prevent races.
-        with self._manifest_lock, InterProcessLock(self._manifest_lockfile):
+        with _TAR_MANIFEST_INSTALL_LOCK, InterProcessLock(self._manifest_lockfile):
             # Now that we have acquired the lock, repeat the check, since
             # another thread may have downloaded the manifest.
             if self._manifest_path.is_file():

@@ -6,10 +6,8 @@ import os
 import sys
 from typing import List, Optional
 
-import gym
 import pytest
 
-import compiler_gym  # noqa Register environments.
 from compiler_gym.util import debug_util as dbg
 
 
@@ -40,14 +38,6 @@ def main(extra_pytest_args: Optional[List[str]] = None, debug_level: int = 1):
     os.environ["COMPILER_GYM_SITE_DATA"] = "/tmp/compiler_gym/tests/site_data"
     os.environ["COMPILER_GYM_CACHE"] = "/tmp/compiler_gym/tests/cache"
 
-    # Install some benchmarks for the LLVM environment as otherwise
-    # reset() will fail.
-    env = gym.make("llvm-v0")
-    try:
-        env.require_dataset("cBench-v1")
-    finally:
-        env.close()
-
     pytest_args = sys.argv + ["-vv"]
     # Support for sharding. If a py_test target has the shard_count attribute
     # set (in the range [1,50]), then the pytest-shard module is used to divide
@@ -62,4 +52,18 @@ def main(extra_pytest_args: Optional[List[str]] = None, debug_level: int = 1):
 
     pytest_args += extra_pytest_args or []
 
-    sys.exit(pytest.main(pytest_args))
+    returncode = pytest.main(pytest_args)
+
+    # By default pytest will fail with an error if no tests are collected.
+    # Disable that behavior here (with a warning) since there legitimate cases
+    # where we may want to run a test file with no tests in it. For example,
+    # when running on a continuous integration service where all the tests are
+    # marked with the @skip_on_ci decorator.
+    if returncode == pytest.ExitCode.NO_TESTS_COLLECTED.value:
+        print(
+            "WARNING: The test suite was empty. Is that intended?",
+            file=sys.stderr,
+        )
+        returncode = 0
+
+    sys.exit(returncode)

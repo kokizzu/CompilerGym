@@ -4,7 +4,9 @@
 # LICENSE file in the root directory of this source tree.
 import os
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Iterable, List
+
+import numpy as np
 
 from compiler_gym.datasets.dataset import Benchmark, Dataset
 from compiler_gym.util.decorators import memoized_property
@@ -14,12 +16,12 @@ class FilesDataset(Dataset):
     """A dataset comprising a directory tree of files.
 
     A FilesDataset is a root directory that contains (a possibly nested tree of)
-    files, where each file represents a benchmark. Files can be filtered on
-    their expected filename suffix.
+    files, where each file represents a benchmark. The directory contents can be
+    filtered by specifying a filename suffix that files must match.
 
-    Every file that matches a filename suffix is a benchmark. The URI of a
-    benchmark is the relative path of the file, stripped of the filename suffix.
-    For example, given the following file tree:
+    The URI of benchmarks is the relative path of each file, stripped of a
+    required filename suffix, if specified. For example, given the following
+    file tree:
 
     .. code-block::
 
@@ -54,9 +56,10 @@ class FilesDataset(Dataset):
             a file to be used as a benchmark.
 
         :param memoize_uris: Whether to memoize the list of URIs contained in
-            the dataset. Memoizing the URIs is a tradeoff between *O(n)*
-            computation complexity of random access vs *O(n)* space complexity
-            of memoizing the URI list.
+            the dataset. Memoizing the URIs enables faster repeated iteration
+            over :meth:`dataset.benchmark_uris()
+            <compiler_gym.datasets.Dataset.benchmark_uris>` at the expense of
+            increased memory overhead as the file list must be kept in memory.
 
         :param dataset_args: See :meth:`Dataset.__init__()
             <compiler_gym.datasets.Dataset.__init__>`.
@@ -108,12 +111,8 @@ class FilesDataset(Dataset):
         else:
             yield from self._benchmark_uris_iter
 
-    def benchmark(self, uri: Optional[str] = None) -> Benchmark:
+    def benchmark(self, uri: str) -> Benchmark:
         self.install()
-        if uri is None or len(uri) <= len(self.name) + 1:
-            if not self.size:
-                raise ValueError("No benchmarks")
-            return self._get_benchmark_by_index(self.random.integers(self.size))
 
         relpath = f"{uri[len(self.name) + 1:]}{self.benchmark_file_suffix}"
         abspath = self.dataset_root / relpath
@@ -121,43 +120,5 @@ class FilesDataset(Dataset):
             raise LookupError(f"Benchmark not found: {uri} (file not found: {abspath})")
         return self.benchmark_class.from_file(uri, abspath)
 
-    def _get_benchmark_by_index(self, n: int) -> Benchmark:
-        """Look up a benchmark using a numeric index into the list of URIs,
-        without bounds checking.
-        """
-        # If we have memoized the benchmark IDs then just index into the list.
-        # Otherwise we will scan through the directory hierarchy.
-        if self.memoize_uris:
-            if not self._memoized_uris:
-                self._memoized_uris = self._benchmark_uris
-            return self.benchmark(self._memoized_uris[n])
-
-        i = 0
-        for root, dirs, files in os.walk(self.dataset_root):
-            reldir = root[len(str(self.dataset_root)) + 1 :]
-
-            # Filter only the files that match the target file suffix.
-            valid_files = [f for f in files if f.endswith(self.benchmark_file_suffix)]
-
-            if i + len(valid_files) <= n:
-                # There aren't enough files in this directory to bring us up to
-                # the target file index, so skip this directory and descend into
-                # subdirectories.
-                i += len(valid_files)
-                # Sort the subdirectories so that the iteration order is stable
-                # and consistent with benchmark_uris().
-                dirs.sort()
-            else:
-                valid_files.sort()
-                filename = valid_files[n - i]
-                name_stem = filename
-                if self.benchmark_file_suffix:
-                    name_stem = filename[: -len(self.benchmark_file_suffix)]
-                # Use os.path.join() rather than simple '/' concatenation as
-                # reldir may be empty.
-                uri = os.path.join(self.name, reldir, name_stem)
-                return self.benchmark_class.from_file(uri, os.path.join(root, filename))
-
-        # "Unreachable". _get_benchmark_by_index() should always be called with
-        # in-bounds values. Perhaps files have been deleted from site_data_path?
-        raise IndexError(f"Could not find benchmark with index {n} / {self.size}")
+    def _random_benchmark(self, random_state: np.random.Generator) -> Benchmark:
+        return self.benchmark(random_state.choice(list(self.benchmark_uris())))

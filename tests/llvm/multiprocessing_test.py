@@ -11,6 +11,7 @@ import gym
 import pytest
 
 from compiler_gym.envs import LlvmEnv
+from tests.pytest_plugins.common import macos_only
 from tests.test_main import main
 
 
@@ -42,7 +43,7 @@ def test_running_environment_in_background_process():
     queue = mp.Queue(maxsize=3)
     process = mp.Process(
         target=process_worker,
-        args=("llvm-autophase-ic-v0", "cBench-v1/crc32", [0, 0, 0], queue),
+        args=("llvm-autophase-ic-v0", "cbench-v1/crc32", [0, 0, 0], queue),
     )
     process.start()
     try:
@@ -63,13 +64,14 @@ def test_running_environment_in_background_process():
         process.join()
 
 
-@pytest.mark.skipif(sys.platform != "darwin", reason="macOS only")
+@macos_only
+@pytest.mark.skipif(sys.version_info < (3, 8, 0), reason="Py >= 3.8 only")
 def test_moving_environment_to_background_process_macos():
     """Test moving an LLVM environment to a background process."""
     queue = mp.Queue(maxsize=3)
 
     env = gym.make("llvm-autophase-ic-v0")
-    env.reset(benchmark="cBench-v1/crc32")
+    env.reset(benchmark="cbench-v1/crc32")
 
     process = mp.Process(target=process_worker_with_env, args=(env, [0, 0, 0], queue))
 
@@ -83,10 +85,10 @@ def test_moving_environment_to_background_process_macos():
 def test_port_collision_test():
     """Test that attempting to connect to a port that is already in use succeeds."""
     env_a = gym.make("llvm-autophase-ic-v0")
-    env_a.reset(benchmark="cBench-v1/crc32")
+    env_a.reset(benchmark="cbench-v1/crc32")
 
     env_b = LlvmEnv(service=env_a.service.connection.url)
-    env_b.reset(benchmark="cBench-v1/crc32")
+    env_b.reset(benchmark="cbench-v1/crc32")
 
     env_b.close()
     env_a.close()

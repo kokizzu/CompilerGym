@@ -60,7 +60,7 @@ def test_dataset_optional_properties():
     )
 
     assert dataset.references == {}  # Default value.
-    assert not dataset.hidden
+    assert not dataset.deprecated
     assert dataset.sort_order == 0
     assert dataset.validatable == "No"
 
@@ -73,7 +73,7 @@ def test_dataset_optional_properties_explicit_values():
         license="MIT",
         site_data_base="test",
         references={"GitHub": "https://github.com/facebookresearch/CompilerGym"},
-        hidden=True,
+        deprecated="Deprecation message",
         sort_order=10,
         validatable="Yes",
     )
@@ -81,7 +81,7 @@ def test_dataset_optional_properties_explicit_values():
     assert dataset.references == {
         "GitHub": "https://github.com/facebookresearch/CompilerGym"
     }
-    assert dataset.hidden
+    assert dataset.deprecated
     assert dataset.sort_order == 10
     assert dataset.validatable == "Yes"
 
@@ -134,7 +134,61 @@ def test_dataset_site_data_directory(tmpwd: Path):
     assert not dataset.site_data_path.is_dir()  # Dir is not created until needed.
 
 
-class TestDataset(Dataset):
+def test_dataset_deprecation_message(tmpwd: Path):
+    """Test that a deprecation warning is emitted on install()."""
+    dataset = Dataset(
+        name="benchmark://test-v0",
+        description="A test dataset",
+        license="MIT",
+        site_data_base="test",
+        deprecated="The cat sat on the mat",
+    )
+
+    with pytest.warns(DeprecationWarning, match="The cat sat on the mat"):
+        dataset.install()
+
+
+def test_dataset_equality_and_sorting():
+    """Test comparison operators between datasets."""
+    a = Dataset(
+        name="benchmark://a-v0",
+        description="A test dataset",
+        license="MIT",
+        site_data_base="test",
+    )
+    a2 = Dataset(
+        name="benchmark://a-v0",
+        description="A test dataset",
+        license="MIT",
+        site_data_base="test",
+    )
+    b = Dataset(
+        name="benchmark://b-v0",
+        description="A test dataset",
+        license="MIT",
+        site_data_base="test",
+    )
+    assert a == a2
+    assert a != b
+    assert a < b
+    assert a <= b
+    assert b > a
+    assert b >= a
+
+    # String comparisons
+    assert a == "benchmark://a-v0"
+    assert a != "benchmark://b-v0"
+    assert a < "benchmark://b-v0"
+
+    # Sorting
+    assert sorted([a2, b, a]) == [
+        "benchmark://a-v0",
+        "benchmark://a-v0",
+        "benchmark://b-v0",
+    ]
+
+
+class DatasetForTesting(Dataset):
     """A dataset to use for testing."""
 
     def __init__(self, benchmarks=None):
@@ -165,19 +219,19 @@ class TestDataset(Dataset):
 
 
 def test_dataset_size():
-    dataset = TestDataset()
+    dataset = DatasetForTesting()
     assert dataset.size == 3
     assert len(dataset) == 3
 
 
 def test_benchmarks_lookup_by_uri():
-    dataset = TestDataset()
+    dataset = DatasetForTesting()
     assert dataset.benchmark("benchmark://test-v0/b") == 2
     assert dataset["benchmark://test-v0/b"] == 2
 
 
 def test_benchmarks_iter():
-    dataset = TestDataset()
+    dataset = DatasetForTesting()
     assert list(dataset.benchmarks()) == [1, 2, 3]
     assert list(dataset) == [1, 2, 3]
 

@@ -2,26 +2,22 @@
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
-import io
-import json
 import logging
 import os
 import shutil
-import tarfile
 import warnings
 from pathlib import Path
-from typing import Dict, Iterable, List, NamedTuple, Optional, Union
+from typing import Dict, Iterable, Optional, Union
 
-import fasteners
 import numpy as np
-from deprecated.sphinx import deprecated
+from deprecated.sphinx import deprecated as mark_deprecated
 
-from compiler_gym.datasets.benchmark import DATASET_NAME_RE, Benchmark
+from compiler_gym.datasets.benchmark import Benchmark
+from compiler_gym.datasets.uri import DATASET_NAME_RE
 from compiler_gym.util.debug_util import get_logging_level
-from compiler_gym.util.download import download
 
 
-class Dataset(object):
+class Dataset:
     """A dataset is a collection of benchmarks.
 
     The Dataset class has methods for installing and managing groups of
@@ -45,8 +41,7 @@ class Dataset(object):
         site_data_base: Path,
         benchmark_class=Benchmark,
         references: Optional[Dict[str, str]] = None,
-        random: Optional[np.random.Generator] = None,
-        hidden: bool = False,
+        deprecated: Optional[str] = None,
         sort_order: int = 0,
         logger: Optional[logging.Logger] = None,
         validatable: str = "No",
@@ -67,14 +62,14 @@ class Dataset(object):
             It must have the same constructor signature as :class:`Benchmark
             <compiler_gym.datasets.Benchmark>`.
 
-        :param references: A dictionary containing URLs for this dataset, keyed
-            by their name. E.g. :code:`references["Paper"] = "https://..."`.
+        :param references: A dictionary of useful named URLs for this dataset
+            containing extra information, download links, papers, etc.
 
-        :param random: A source of randomness for selecting benchmarks.
-
-        :param hidden: Whether the dataset should be excluded from the
-            :meth:`datasets() <compiler_gym.datasets.Datasets.dataset>` iterator
-            of any :class:`Datasets <compiler_gym.datasets.Datasets>` container.
+        :param deprecated: Mark the dataset as deprecated and issue a warning
+            when :meth:`install() <compiler_gym.datasets.Dataset.install>`,
+            including the given method. Deprecated datasets are excluded from
+            the :meth:`datasets() <compiler_gym.datasets.Datasets.dataset>`
+            iterator by default.
 
         :param sort_order: An optional numeric value that should be used to
             order this dataset relative to others. Lowest value sorts first.
@@ -87,6 +82,8 @@ class Dataset(object):
             compiler has not broken the semantics of the program. This value
             takes a string and is used for documentation purposes only.
             Suggested values are "Yes", "No", or "Partial".
+
+        :raises ValueError: If :code:`name` does not match the expected type.
         """
         self._name = name
         components = DATASET_NAME_RE.match(name)
@@ -100,10 +97,9 @@ class Dataset(object):
         self._protocol = components.group("dataset_protocol")
         self._version = int(components.group("dataset_version"))
         self._references = references or {}
-        self._hidden = hidden
+        self._deprecation_message = deprecated
         self._validatable = validatable
 
-        self.random = random or np.random.default_rng()
         self._logger = logger
         self.sort_order = sort_order
         self.benchmark_class = benchmark_class
@@ -114,17 +110,6 @@ class Dataset(object):
 
     def __repr__(self):
         return self.name
-
-    def seed(self, seed: int):
-        """Set the random state.
-
-        Setting a random state will fix the order that
-        :meth:`dataset.benchmark() <compiler_gym.datasets.Dataset.benchmark>`
-        returns benchmarks when called without arguments.
-
-        :param seed: A number.
-        """
-        self.random = np.random.default_rng(seed)
 
     @property
     def logger(self) -> logging.Logger:
@@ -175,7 +160,7 @@ class Dataset(object):
 
     @property
     def version(self) -> int:
-        """A version tag for this dataset.
+        """The version tag for this dataset.
 
         :type: int
         """
@@ -183,22 +168,28 @@ class Dataset(object):
 
     @property
     def references(self) -> Dict[str, str]:
-        """A dictionary containing URLs for this dataset, keyed by their name.
-        E.g. :code:`references["Paper"] = "https://..."`.
+        """A dictionary of useful named URLs for this dataset containing extra
+        information, download links, papers, etc.
+
+        For example:
+
+            >>> dataset.references
+            {'Paper': 'https://arxiv.org/pdf/1407.3487.pdf',
+            'Homepage': 'https://ctuning.org/wiki/index.php/CTools:CBench'}
 
         :type: Dict[str, str]
         """
         return self._references
 
     @property
-    def hidden(self) -> str:
+    def deprecated(self) -> bool:
         """Whether the dataset is included in the iterable sequence of datasets
         of a containing :class:`Datasets <compiler_gym.datasets.Datasets>`
         collection.
 
         :type: bool
         """
-        return self._hidden
+        return self._deprecation_message is not None
 
     @property
     def validatable(self) -> str:
@@ -259,11 +250,28 @@ class Dataset(object):
     def __len__(self) -> Union[int, float]:
         """The number of benchmarks in the dataset.
 
-        Equivalent to :meth:`Dataset.size <compiler_gym.datasets.Dataset.size>`.
+        This is the same as :meth:`Dataset.size
+        <compiler_gym.datasets.Dataset.size>`:
+
+            >>> len(dataset) == dataset.size
+            True
 
         :return: An integer, or :code:`math.float`.
         """
         return self.size
+
+    def __eq__(self, other: Union["Dataset", str]) -> bool:
+        if isinstance(other, Dataset):
+            return self.name == other.name
+        return self.name == other
+
+    def __lt__(self, other: Union["Dataset", str]) -> bool:
+        if isinstance(other, Dataset):
+            return self.name < other.name
+        return self.name < other
+
+    def __le__(self, other: Union["Dataset", str]) -> bool:
+        return self < other or self == other
 
     @property
     def installed(self) -> bool:
@@ -278,19 +286,26 @@ class Dataset(object):
     def install(self) -> None:
         """Install this dataset locally.
 
-        Implementing this method is optional.
+        Implementing this method is optional. If implementing this method, you
+        must call :code:`super().install()` first.
 
-        This method should not perform redundant work - it should detect whether
-        any work needs to be done so that repeated calls to install will
-        complete quickly.
+        This method should not perform redundant work. This method should first
+        detect whether any work needs to be done so that repeated calls to
+        :code:`install()` will complete quickly.
         """
+        if self.deprecated:
+            warnings.warn(
+                f"Dataset '{self.name}' is marked as deprecated. {self._deprecation_message}",
+                category=DeprecationWarning,
+                stacklevel=2,
+            )
 
     def uninstall(self) -> None:
         """Remove any local data for this benchmark.
 
-        The dataset can still be used after calling this method. This method
-        just undoes the work of :meth:`install()
-        <compiler_gym.datasets.Dataset.install>`.
+        This method undoes the work of :meth:`install()
+        <compiler_gym.datasets.Dataset.install>`. The dataset can still be used
+        after calling this method.
         """
         if self.site_data_path.is_dir():
             shutil.rmtree(self.site_data_path)
@@ -298,7 +313,7 @@ class Dataset(object):
     def benchmarks(self) -> Iterable[Benchmark]:
         """Enumerate the (possibly infinite) benchmarks lazily.
 
-        Benchmark order is consistent across runs. The order of
+        Iteration order is consistent across runs. The order of
         :meth:`benchmarks() <compiler_gym.datasets.Dataset.benchmarks>` and
         :meth:`benchmark_uris() <compiler_gym.datasets.Dataset.benchmark_uris>`
         is the same.
@@ -317,8 +332,12 @@ class Dataset(object):
     def __iter__(self) -> Iterable[Benchmark]:
         """Enumerate the (possibly infinite) benchmarks lazily.
 
-        Equivalent to :meth:`Dataset.benchmarks()
-        <compiler_gym.datasets.Dataset.benchmarks>`.
+        This is the same as :meth:`Dataset.benchmarks()
+        <compiler_gym.datasets.Dataset.benchmarks>`:
+
+            >>> from itertools import islice
+            >>> list(islice(dataset, 100)) == list(islice(datset.benchmarks(), 100))
+            True
 
         :return: An iterable sequence of :meth:`Benchmark
             <compiler_gym.datasets.Benchmark>` instances.
@@ -328,40 +347,62 @@ class Dataset(object):
     def benchmark_uris(self) -> Iterable[str]:
         """Enumerate the (possibly infinite) benchmark URIs.
 
-        Benchmark URI order is consistent across runs. The order of
+        Iteration order is consistent across runs. The order of
         :meth:`benchmarks() <compiler_gym.datasets.Dataset.benchmarks>` and
         :meth:`benchmark_uris() <compiler_gym.datasets.Dataset.benchmark_uris>`
         is the same.
+
+        If the number of benchmarks in the dataset is infinite
+        (:code:`len(dataset) == math.inf`), the iterable returned by this method
+        will continue indefinitely.
 
         :return: An iterable sequence of benchmark URI strings.
         """
         raise NotImplementedError("abstract class")
 
-    def benchmark(self, uri: Optional[str] = None) -> Benchmark:
+    def benchmark(self, uri: str) -> Benchmark:
         """Select a benchmark.
 
-        If a URI is given, the corresponding :class:`Benchmark
-        <compiler_gym.datasets.Benchmark>` is returned. Otherwise, a benchmark
-        is selected uniformly randomly.
-
-        Use :meth:`seed() <compiler_gym.datasets.Dataset.seed>` to force a
-        reproducible order for randomly selected benchmarks.
-
-        :param uri: The URI of the benchmark to return. If :code:`None`, select
-            a benchmark randomly using :code:`self.random`.
+        :param uri: The URI of the benchmark to return.
 
         :return: A :class:`Benchmark <compiler_gym.datasets.Benchmark>`
             instance.
 
-        :raise LookupError: If :code:`uri` is provided but does not exist.
+        :raise LookupError: If :code:`uri` is not found.
+        """
+        raise NotImplementedError("abstract class")
+
+    def random_benchmark(
+        self, random_state: Optional[np.random.Generator] = None
+    ) -> Benchmark:
+        """Select a benchmark randomly.
+
+        :param random_state: A random number generator. If not provided, a
+            default :code:`np.random.default_rng()` is used.
+
+        :return: A :class:`Benchmark <compiler_gym.datasets.Benchmark>`
+            instance.
+        """
+        random_state = random_state or np.random.default_rng()
+        return self._random_benchmark(random_state)
+
+    def _random_benchmark(self, random_state: np.random.Generator) -> Benchmark:
+        """Private implementation of the random benchmark getter.
+
+        Subclasses must implement this method so that it selects a benchmark
+        from the available benchmarks with uniform probability, using only
+        :code:`random_state` as a source of randomness.
         """
         raise NotImplementedError("abstract class")
 
     def __getitem__(self, uri: str) -> Benchmark:
         """Select a benchmark by URI.
 
-        Equivalent to :meth:`Dataset.benchmark(uri)
-        <compiler_gym.datasets.Dataset.benchmark>`.
+        This is the same as :meth:`Dataset.benchmark(uri)
+        <compiler_gym.datasets.Dataset.benchmark>`:
+
+            >>> dataset["benchmark://cbench-v1/crc32"] == dataset.benchmark("benchmark://cbench-v1/crc32")
+            True
 
         :return: A :class:`Benchmark <compiler_gym.datasets.Benchmark>`
             instance.
@@ -375,255 +416,92 @@ class DatasetInitError(OSError):
     """Base class for errors raised if a dataset fails to initialize."""
 
 
-class LegacyDataset(NamedTuple):
-    """A collection of benchmarks for use by an environment.
-    .. deprecated:: 0.1.4
-       The next release of CompilerGym will introduce a new API for describing
-       datasets with extended functionality. See
-       `here <https://github.com/facebookresearch/CompilerGym/issues/45>`_ for
-       more information.
-    """
-
-    name: str
-    """The name of the dataset."""
-
-    license: str
-    """The license of the dataset."""
-
-    file_count: int
-    """The number of files in the unpacked dataset."""
-
-    size_bytes: int
-    """The size of the unpacked dataset in bytes."""
-
-    url: str = ""
-    """A URL where the dataset can be downloaded from. May be an empty string."""
-
-    sha256: str = ""
-    """The sha256 checksum of the dataset archive. If provided, this is used to
-    verify the contents of the dataset upon download.
-    """
-
-    compiler: str = ""
-    """The name of the compiler that this dataset supports."""
-
-    description: str = ""
-    """An optional human-readable description of the dataset."""
-
-    platforms: List[str] = ["macos", "linux"]
-    """A list of platforms supported by this dataset. Allowed platforms 'macos' and 'linux'."""
-
-    deprecated_since: str = ""
-    """The CompilerGym release in which this dataset was deprecated."""
-
-    @property
-    def deprecated(self) -> bool:
-        """Whether the dataset is deprecated."""
-        return bool(self.deprecated_since)
-
-    @classmethod
-    def from_json_file(cls, path: Path) -> "LegacyDataset":
-        """Construct a dataset form a JSON metadata file.
-        :param path: Path of the JSON metadata.
-        :return: A LegacyDataset instance.
-        """
-        try:
-            with open(str(path), "rb") as f:
-                data = json.load(f)
-        except json.decoder.JSONDecodeError as e:
-            raise OSError(
-                f"Failed to read dataset metadata file:\n"
-                f"Path: {path}\n"
-                f"Error: {e}"
-            )
-        return cls(**data)
-
-    def to_json_file(self, path: Path) -> Path:
-        """Write the dataset metadata to a JSON file.
-        :param path: Path of the file to write.
-        :return: The path of the written file.
-        """
-        with open(str(path), "wb") as f:
-            json.dump(self._asdict(), f)
-        return path
-
-
-@deprecated(
+@mark_deprecated(
     version="0.1.4",
     reason=(
-        "Activating datasets will be removed in v0.1.5. "
+        "Datasets are now automatically activated. "
         "`More information <https://github.com/facebookresearch/CompilerGym/issues/45>`_."
     ),
 )
-def activate(env, name: str) -> bool:
-    """Move a directory from the inactive to active benchmark directory.
-    :param: The name of a dataset.
+def activate(env, dataset: Union[str, Dataset]) -> bool:
+    """Deprecated function for managing datasets.
+
+    :param dataset: The name of the dataset to download, or a :class:`Dataset
+        <compiler_gym.datasets.Dataset>` instance.
+
     :return: :code:`True` if the dataset was activated, else :code:`False` if
         already active.
+
     :raises ValueError: If there is no dataset with that name.
     """
-    with fasteners.InterProcessLock(env.datasets_site_path / "LOCK"):
-        if (env.datasets_site_path / name).exists():
-            # There is already an active benchmark set with this name.
-            return False
-        if not (env.inactive_datasets_site_path / name).exists():
-            raise ValueError(f"Inactive dataset not found: {name}")
-        os.rename(env.inactive_datasets_site_path / name, env.datasets_site_path / name)
-        os.rename(
-            env.inactive_datasets_site_path / f"{name}.json",
-            env.datasets_site_path / f"{name}.json",
-        )
-        return True
+    return False
 
 
-@deprecated(
+@mark_deprecated(
     version="0.1.4",
     reason=(
-        "Deleting datasets will be removed in v0.1.5. "
+        "Please use :meth:`del env.datasets[dataset] <compiler_gym.datasets.Datasets.__delitem__>`. "
         "`More information <https://github.com/facebookresearch/CompilerGym/issues/45>`_."
     ),
 )
-def delete(env, name: str) -> bool:
-    """Delete a directory in the inactive benchmark directory.
-    :param: The name of a dataset.
+def delete(env, dataset: Union[str, Dataset]) -> bool:
+    """Deprecated function for managing datasets.
+
+    Please use :meth:`del env.datasets[dataset]
+    <compiler_gym.datasets.Datasets.__delitem__>`.
+
+    :param dataset: The name of the dataset to download, or a :class:`Dataset
+        <compiler_gym.datasets.Dataset>` instance.
+
     :return: :code:`True` if the dataset was deleted, else :code:`False` if
         already deleted.
     """
-    with fasteners.InterProcessLock(env.datasets_site_path / "LOCK"):
-        deleted = False
-        if (env.datasets_site_path / name).exists():
-            shutil.rmtree(str(env.datasets_site_path / name))
-            os.unlink(str(env.datasets_site_path / f"{name}.json"))
-            deleted = True
-        if (env.inactive_datasets_site_path / name).exists():
-            shutil.rmtree(str(env.inactive_datasets_site_path / name))
-            os.unlink(str(env.inactive_datasets_site_path / f"{name}.json"))
-            deleted = True
-        return deleted
+    del env.datasets[dataset]
+    return False
 
 
-@deprecated(
+@mark_deprecated(
     version="0.1.4",
     reason=(
-        "Deactivating datasets will be removed in v0.1.5. "
+        "Please use :meth:`env.datasets.deactivate() <compiler_gym.datasets.Datasets.deactivate>`. "
         "`More information <https://github.com/facebookresearch/CompilerGym/issues/45>`_."
     ),
 )
-def deactivate(env, name: str) -> bool:
-    """Move a directory from active to the inactive benchmark directory.
-    :param: The name of a dataset.
+def deactivate(env, dataset: Union[str, Dataset]) -> bool:
+    """Deprecated function for managing datasets.
+
+    Please use :meth:`del env.datasets[dataset]
+    <compiler_gym.datasets.Datasets.__delitem__>`.
+
+    :param dataset: The name of the dataset to download, or a :class:`Dataset
+        <compiler_gym.datasets.Dataset>` instance.
+
     :return: :code:`True` if the dataset was deactivated, else :code:`False` if
         already inactive.
     """
-    with fasteners.InterProcessLock(env.datasets_site_path / "LOCK"):
-        if not (env.datasets_site_path / name).exists():
-            return False
-        os.rename(env.datasets_site_path / name, env.inactive_datasets_site_path / name)
-        os.rename(
-            env.datasets_site_path / f"{name}.json",
-            env.inactive_datasets_site_path / f"{name}.json",
-        )
-        return True
+    del env.datasets[dataset]
+    return False
 
 
-def require(env, dataset: Union[str, LegacyDataset]) -> bool:
-    """Require that the given dataset is available to the environment.
-    This will download and activate the dataset if it is not already installed.
-    After calling this function, benchmarks from the dataset will be available
-    to use.
-    Example usage:
-        >>> env = gym.make("llvm-v0")
-        >>> require(env, "blas-v0")
-        >>> env.reset(benchmark="blas-v0/1")
+@mark_deprecated(
+    version="0.1.7",
+    reason=(
+        "Datasets are now installed automatically, there is no need to call :code:`require()`. "
+        "`More information <https://github.com/facebookresearch/CompilerGym/issues/45>`_."
+    ),
+)
+def require(env, dataset: Union[str, Dataset]) -> bool:
+    """Deprecated function for managing datasets.
+
+    Datasets are now installed automatically. See :class:`env.datasets
+        <compiler_gym.datasets.Datasets>`.
+
     :param env: The environment that this dataset is required for.
-    :param dataset: The name of the dataset to download, the URL of the dataset,
-        or a :class:`LegacyDataset` instance.
+
+    :param dataset: The name of the dataset to download, or a :class:`Dataset
+        <compiler_gym.datasets.Dataset>` instance.
+
     :return: :code:`True` if the dataset was downloaded, or :code:`False` if the
         dataset was already available.
     """
-
-    def download_and_unpack_archive(
-        url: str, sha256: Optional[str] = None
-    ) -> LegacyDataset:
-        json_files_before = {
-            f
-            for f in env.inactive_datasets_site_path.iterdir()
-            if f.is_file() and f.name.endswith(".json")
-        }
-        tar_data = io.BytesIO(download(url, sha256))
-        with tarfile.open(fileobj=tar_data, mode="r:bz2") as arc:
-            arc.extractall(str(env.inactive_datasets_site_path))
-        json_files_after = {
-            f
-            for f in env.inactive_datasets_site_path.iterdir()
-            if f.is_file() and f.name.endswith(".json")
-        }
-        new_json = json_files_after - json_files_before
-        if not len(new_json):
-            raise OSError(f"Downloaded dataset {url} contains no metadata JSON file")
-        return LegacyDataset.from_json_file(list(new_json)[0])
-
-    def unpack_local_archive(path: Path) -> LegacyDataset:
-        if not path.is_file():
-            raise FileNotFoundError(f"File not found: {path}")
-        json_files_before = {
-            f
-            for f in env.inactive_datasets_site_path.iterdir()
-            if f.is_file() and f.name.endswith(".json")
-        }
-        with tarfile.open(str(path), "r:bz2") as arc:
-            arc.extractall(str(env.inactive_datasets_site_path))
-        json_files_after = {
-            f
-            for f in env.inactive_datasets_site_path.iterdir()
-            if f.is_file() and f.name.endswith(".json")
-        }
-        new_json = json_files_after - json_files_before
-        if not len(new_json):
-            raise OSError(f"Downloaded dataset {url} contains no metadata JSON file")
-        return LegacyDataset.from_json_file(list(new_json)[0])
-
-    with fasteners.InterProcessLock(env.datasets_site_path / "LOCK"):
-        # Resolve the name and URL of the dataset.
-        sha256 = None
-        if isinstance(dataset, LegacyDataset):
-            name, url = dataset.name, dataset.url
-        elif isinstance(dataset, str):
-            # Check if we have already downloaded the dataset.
-            if "://" in dataset:
-                name, url = None, dataset
-                dataset: Optional[LegacyDataset] = None
-            else:
-                try:
-                    dataset: Optional[LegacyDataset] = env.available_datasets[dataset]
-                except KeyError:
-                    raise ValueError(f"Dataset not found: {dataset}")
-                name, url, sha256 = dataset.name, dataset.url, dataset.sha256
-        else:
-            raise TypeError(
-                f"require() called with unsupported type: {type(dataset).__name__}"
-            )
-
-        if dataset and dataset.deprecated:
-            warnings.warn(
-                f"Dataset '{dataset.name}' is deprecated as of CompilerGym "
-                f"release {dataset.deprecated_since}, please update to the "
-                "latest available version",
-                DeprecationWarning,
-            )
-
-        # Check if we have already downloaded the dataset.
-        if name:
-            if (env.datasets_site_path / name).is_dir():
-                # Dataset is already downloaded and active.
-                return False
-            elif not (env.inactive_datasets_site_path / name).is_dir():
-                # Dataset is downloaded but inactive.
-                name = download_and_unpack_archive(url, sha256=sha256).name
-        elif url.startswith("file:///"):
-            name = unpack_local_archive(Path(url[len("file:///") :])).name
-        else:
-            name = download_and_unpack_archive(url, sha256=sha256).name
-
-        activate(env, name)
-        return True
+    return False

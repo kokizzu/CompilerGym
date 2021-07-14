@@ -8,14 +8,10 @@ from pathlib import Path
 
 import pytest
 
-from compiler_gym.datasets.benchmark import (
-    BENCHMARK_URI_RE,
-    DATASET_NAME_RE,
-    Benchmark,
-    BenchmarkSource,
-)
+from compiler_gym.datasets import Benchmark, BenchmarkSource
+from compiler_gym.datasets.uri import BENCHMARK_URI_RE, DATASET_NAME_RE
 from compiler_gym.service.proto import Benchmark as BenchmarkProto
-from compiler_gym.validation_result import ValidationError
+from compiler_gym.validation_error import ValidationError
 from tests.test_main import main
 
 pytest_plugins = ["tests.pytest_plugins.common"]
@@ -28,54 +24,58 @@ def _rgx_match(regex, groupname, string) -> str:
     return match.group(groupname)
 
 
-@pytest.mark.parametrize("regex", (DATASET_NAME_RE, BENCHMARK_URI_RE))
-def test_benchmark_uri_protocol(regex):
-    assert not regex.match("B?://cbench-v1/")  # Invalid characters
-    assert not regex.match("cbench-v1/")  # Missing protocol
+def test_benchmark_uri_protocol():
+    assert (
+        _rgx_match(DATASET_NAME_RE, "dataset_protocol", "benchmark://cbench-v1/")
+        == "benchmark"
+    )
+    assert (
+        _rgx_match(DATASET_NAME_RE, "dataset_protocol", "Generator13://gen-v11/")
+        == "Generator13"
+    )
 
-    assert (
-        _rgx_match(regex, "dataset_protocol", "benchmark://cbench-v1/") == "benchmark"
-    )
-    assert (
-        _rgx_match(regex, "dataset_protocol", "Generator13://gen-v11/") == "Generator13"
-    )
+
+def test_invalid_benchmark_uris():
+    # Invalid protocol
+    assert not DATASET_NAME_RE.match("B?://cbench-v1/")  # Invalid characters
+    assert not DATASET_NAME_RE.match("cbench-v1/")  # Missing protocol
+
+    # Invalid dataset name
+    assert not BENCHMARK_URI_RE.match("benchmark://cbench?v0/foo")  # Invalid character
+    assert not BENCHMARK_URI_RE.match(
+        "benchmark://cbench/foo"
+    )  # Missing version suffix
+    assert not BENCHMARK_URI_RE.match("benchmark://cbench-v0")  # Missing benchmark ID
+    assert not BENCHMARK_URI_RE.match("benchmark://cbench-v0/")  # Missing benchmark ID
+
+    # Invalid benchmark ID
+    assert not BENCHMARK_URI_RE.match("benchmark://cbench-v1/ whitespace")  # Whitespace
+    assert not BENCHMARK_URI_RE.match("benchmark://cbench-v1/\t")  # Whitespace
 
 
 def test_benchmark_uri_dataset():
-    assert not BENCHMARK_URI_RE.match("benchmark://cBench?v0/")  # Invalid character
-    assert not BENCHMARK_URI_RE.match("benchmark://cBench/")  # Missing version suffix
-
     assert (
-        _rgx_match(BENCHMARK_URI_RE, "dataset_name", "benchmark://cbench-v1/")
+        _rgx_match(BENCHMARK_URI_RE, "dataset_name", "benchmark://cbench-v1/foo")
         == "cbench-v1"
     )
     assert (
-        _rgx_match(BENCHMARK_URI_RE, "dataset_name", "Generator13://gen-v11/")
+        _rgx_match(BENCHMARK_URI_RE, "dataset_name", "Generator13://gen-v11/foo")
         == "gen-v11"
     )
 
 
 def test_benchmark_dataset_name():
     assert (
-        _rgx_match(BENCHMARK_URI_RE, "dataset", "benchmark://cbench-v1/")
+        _rgx_match(BENCHMARK_URI_RE, "dataset", "benchmark://cbench-v1/foo")
         == "benchmark://cbench-v1"
     )
     assert (
-        _rgx_match(BENCHMARK_URI_RE, "dataset", "Generator13://gen-v11/")
+        _rgx_match(BENCHMARK_URI_RE, "dataset", "Generator13://gen-v11/foo")
         == "Generator13://gen-v11"
     )
 
 
 def test_benchmark_uri_id():
-    assert not BENCHMARK_URI_RE.match("benchmark://cbench-v1/ whitespace")  # Whitespace
-    assert not BENCHMARK_URI_RE.match("benchmark://cbench-v1/\t")  # Whitespace
-
-    assert (
-        _rgx_match(BENCHMARK_URI_RE, "benchmark_name", "benchmark://cbench-v1") is None
-    )
-    assert (
-        _rgx_match(BENCHMARK_URI_RE, "benchmark_name", "benchmark://cbench-v1/") == ""
-    )
     assert (
         _rgx_match(BENCHMARK_URI_RE, "benchmark_name", "benchmark://cbench-v1/foo")
         == "foo"
@@ -83,6 +83,12 @@ def test_benchmark_uri_id():
     assert (
         _rgx_match(BENCHMARK_URI_RE, "benchmark_name", "benchmark://cbench-v1/foo/123")
         == "foo/123"
+    )
+    assert (
+        _rgx_match(
+            BENCHMARK_URI_RE, "benchmark_name", "benchmark://cbench-v1/foo/123.txt"
+        )
+        == "foo/123.txt"
     )
     assert (
         _rgx_match(
@@ -98,6 +104,7 @@ def test_benchmark_attribute_outside_init():
     """Test that new attributes cannot be added to Benchmark."""
     benchmark = Benchmark(None)
     with pytest.raises(AttributeError):
+        # pylint: disable=assigning-non-slot
         benchmark.foobar = 123  # noqa
 
 
@@ -108,7 +115,7 @@ def test_benchmark_subclass_attribute_outside_init():
         pass
 
     benchmark = TestBenchmark(None)
-    benchmark.foobar = 123
+    benchmark.foobar = 123  # pylint: disable=attribute-defined-outside-init
     assert benchmark.foobar == 123
 
 
@@ -212,6 +219,7 @@ def test_validation_callback_flaky():
 
     def a(env):
         nonlocal flaky
+        del env
         if flaky:
             yield ValidationError(type="Runtime Error")
 
@@ -293,6 +301,32 @@ def test_benchmark_from_file_not_found(tmpwd: Path):
 
     # Use  endswith() because macOS can add a /private prefix to paths.
     assert str(e_ctx.value).endswith(str(path))
+
+
+def test_dataset_equality_and_sorting():
+    """Test comparison operators between datasets."""
+    a = Benchmark(BenchmarkProto(uri="benchmark://example-v0/a"))
+    a2 = Benchmark(BenchmarkProto(uri="benchmark://example-v0/a"))
+    b = Benchmark(BenchmarkProto(uri="benchmark://example-v0/b"))
+
+    assert a == a2
+    assert a != b
+    assert a < b
+    assert a <= b
+    assert b > a
+    assert b >= a
+
+    # String comparisons
+    assert a == "benchmark://example-v0/a"
+    assert a != "benchmark://example-v0/b"
+    assert a < "benchmark://example-v0/b"
+
+    # Sorting
+    assert sorted([a2, b, a]) == [
+        "benchmark://example-v0/a",
+        "benchmark://example-v0/a",
+        "benchmark://example-v0/b",
+    ]
 
 
 if __name__ == "__main__":

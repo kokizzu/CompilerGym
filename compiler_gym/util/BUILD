@@ -14,8 +14,10 @@ py_library(
         "decorators.py",
         "download.py",
         "filesystem.py",
+        "gym_type_hints.py",
         "logs.py",
         "minimize_trajectory.py",
+        "parallelization.py",
         "registration.py",
         "runfiles_path.py",
         "shell_format.py",
@@ -25,7 +27,6 @@ py_library(
         "thread_pool.py",
         "timer.py",
         "truncate.py",
-        "user_input.py",
         "version.py",
     ],
     visibility = ["//visibility:public"],
@@ -62,29 +63,6 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "@boost//:filesystem",
-    ],
-)
-
-cc_library(
-    name = "RunService",
-    srcs = ["RunService.cc"],
-    hdrs = ["RunService.h"],
-    visibility = ["//visibility:public"],
-    deps = [
-        ":RunServiceImpl",
-        "@boost//:filesystem",
-        "@gflags",
-        "@glog",
-    ],
-)
-
-cc_library(
-    name = "RunServiceImpl",
-    hdrs = ["RunServiceImpl.h"],
-    deps = [
-        "@boost//:filesystem",
-        "@com_github_grpc_grpc//:grpc++",
-        "@glog",
     ],
 )
 
